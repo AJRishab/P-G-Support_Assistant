@@ -1,0 +1,66 @@
+{
+  "products": [
+    {
+      "id": "tide-hygiene-clean",
+      "name": "Tide Hygienic Clean Heavy Duty 10X",
+      "brand": "Tide",
+      "category": "Detergent",
+      "ingredients": [
+        "Sodium Alcoholethoxy Sulfate",
+        "Linear Alkylbenzene Sulfonate",
+        "Propylene Glycol",
+        "Sodium Borate",
+        "Water"
+      ],
+      "purpose": "Heavy duty cleaning, removing grease, visible and invisible dirt.",
+      "safety_warnings": "Keep out of reach of children. Swallowing can cause severe irritation or chemical burn. In case of eye contact, flush with water for 15 minutes. In case of ingestion, call Poison Control immediately.",
+      "where_to_buy": "Available at Walmart, Target, and major grocery stores."
+    },
+    {
+      "id": "pampers-swimmers",
+      "name": "Pampers Splashers Disposable Swim Diapers",
+      "brand": "Pampers",
+      "category": "Baby Care",
+      "ingredients": [
+        "Polypropylene",
+        "Polyethylene",
+        "Elastomer",
+        "Adhesives"
+      ],
+      "purpose": "Waterproof swim diapers that don't swell in water.",
+      "safety_warnings": "Keep plastic wrapping away from babies and children to avoid suffocation. Diapers are flammable; keep away from open flame.",
+      "where_to_buy": "Available at Target, Walgreens, and Amazon."
+    },
+    {
+      "id": "olay-regenerist-whip",
+      "name": "Olay Regenerist Whip Active Moisturizer",
+      "brand": "Olay",
+      "category": "Skincare",
+      "ingredients": [
+        "Water",
+        "Glycerin",
+        "Niacinamide (Vitamin B3)",
+        "Tapioca Starch",
+        "Peptides",
+        "Hyaluronic Acid",
+        "Dimethicone"
+      ],
+      "purpose": "Hydrates skin, reduces fine lines and wrinkles, matte finish.",
+      "safety_warnings": "Avoid contact with eyes. If contact occurs, rinse well with water. Stop use if skin irritation or rash occurs.",
+      "where_to_buy": "Available at CVS, Walgreens, Ulta, and olay.com."
+    },
+    {
+      "id": "gillette-labs-exfoliating",
+      "name": "Gillette Labs with Exfoliating Bar Shaving Razor",
+      "brand": "Gillette",
+      "category": "Shaving",
+      "ingredients": [
+        "Stainless Steel blades",
+        "Lubrastrip (PEG-115M, PEG-7M, PEG-100, Silica, Aloe Barbadensis Leaf Juice, Tocopheryl Acetate)"
+      ],
+      "purpose": "Shaving razor with built-in exfoliating bar to remove dirt and debris before the blades pass.",
+      "safety_warnings": "Blades are extremely sharp. Handle with care. Keep out of reach of children.",
+      "where_to_buy": "Available at Walmart, Target, CVS, and gillette.com."
+    }
+  ]
+}

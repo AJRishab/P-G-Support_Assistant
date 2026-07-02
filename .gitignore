@@ -1,0 +1,49 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+.python-version
+
+# ===== Node / Vite (client) =====
+client/node_modules/
+client/dist/
+client/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== SQLite databases (local runtime & test artifacts) =====
+# The product catalog is products.json; these .db files are generated at runtime.
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ===== Env / secrets =====
+.env
+.env.*
+!.env.example
+
+# ===== Editor / IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Logs / misc =====
+*.log
+
+# ===== Claude Code / agent tooling =====
+.claude/
