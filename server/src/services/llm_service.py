@@ -1,22 +1,63 @@
 import os
 import json
 import re
-from google import genai
-from google.genai import types
+import httpx
 
-# Load GEMINI_API_KEY from env
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Load OPENROUTER_API_KEY from env
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+# OpenRouter configuration
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# Default model - can be overridden
+DEFAULT_MODEL = "open_router/openrouter/free"
+
 
 class LLMService:
-    def __init__(self):
-        self.use_mock = not bool(GEMINI_API_KEY)
+    def __init__(self, model_name: str = None):
+        self.use_mock = not bool(OPENROUTER_API_KEY)
+        self.model_name = model_name or DEFAULT_MODEL
+
         if not self.use_mock:
-            # Initialize the official Google Gen AI Client
-            self.client = genai.Client(api_key=GEMINI_API_KEY)
-            self.model_name = "gemini-2.5-flash"
+            # Initialize HTTP client for OpenRouter
+            self.client = httpx.Client(
+                timeout=30.0,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": "https://github.com/AJRishab/pg-support-assistant",
+                    "X-Title": "PG Support Assistant",
+                    "Content-Type": "application/json",
+                }
+            )
         else:
             self.client = None
-            self.model_name = "mock-engine"
+
+    def _call_openrouter(self, messages: list, schema_class=None) -> dict:
+        """
+        Makes a request to OpenRouter API and returns the JSON response.
+        """
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": 0.0,
+            "max_tokens": 4000,
+        }
+
+        if schema_class:
+            # For structured output, we can use response_format parameter
+            # Note: OpenRouter supports OpenAI-compatible structured output
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": schema_class.model_json_schema() if hasattr(schema_class, 'model_json_schema') else None
+            }
+
+        response = self.client.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload)
+        response.raise_for_status()
+
+        data = response.json()
+
+        # Extract the message content
+        message_content = data["choices"][0]["message"]["content"]
+        return json.loads(message_content.strip())
 
     def generate_json(self, prompt: str, schema_class=None) -> dict:
         """
@@ -27,34 +68,19 @@ class LLMService:
             return self._mock_json_response(prompt)
 
         try:
-            # Set structured output config if schema_class is provided
-            config = None
-            if schema_class:
-                config = types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=schema_class,
-                    temperature=0.0
-                )
-            else:
-                config = types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0
-                )
+            # Convert the prompt to OpenAI-style messages format
+            messages = [{"role": "user", "content": prompt}]
 
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=config
-            )
-            return json.loads(response.text.strip())
+            result = self._call_openrouter(messages, schema_class)
+            return result
         except Exception as e:
             # Fallback to mock on remote API errors
-            print(f"[LLMService Error] Calling Gemini API failed: {e}. Falling back to mock.")
+            print(f"[LLMService Error] Calling OpenRouter API failed: {e}. Falling back to mock.")
             return self._mock_json_response(prompt)
 
     async def generate_stream(self, prompt: str, system_instruction: str = None):
         """
-        Asynchronously streams the response text from Gemini or mock.
+        Asynchronously streams the response text from OpenRouter or mock.
         Yields chunk strings.
         """
         if self.use_mock:
@@ -68,18 +94,42 @@ class LLMService:
             return
 
         try:
-            config = types.GenerateContentConfig(temperature=0.7)
+            messages = [{"role": "user", "content": prompt}]
             if system_instruction:
-                config.system_instruction = system_instruction
+                messages.insert(0, {"role": "system", "content": system_instruction})
 
-            response_stream = self.client.models.generate_content_stream(
-                model=self.model_name,
-                contents=prompt,
-                config=config
-            )
-            for chunk in response_stream:
-                if chunk.text:
-                    yield chunk.text
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": "https://github.com/AJRishab/pg-support-assistant",
+                    "X-Title": "PG Support Assistant",
+                    "Content-Type": "application/json",
+                }
+            ) as async_client:
+                payload = {
+                    "model": self.model_name,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 4000,
+                    "stream": True,
+                }
+
+                async with async_client.stream(
+                    f"{OPENROUTER_BASE_URL}/chat/completions",
+                    json=payload
+                ) as response:
+                    async for chunk in response.aiter_lines():
+                        if chunk:
+                            # Parse the streaming JSON line
+                            try:
+                                data = json.loads(chunk)
+                                if "choices" in data and data["choices"]:
+                                    delta = data["choices"][0].get("delta", {})
+                                    if "content" in delta:
+                                        yield delta["content"]
+                            except json.JSONDecodeError:
+                                continue
         except Exception as e:
             print(f"[LLMService Error] Streaming failed: {e}. Falling back to mock stream.")
             # Fallback to mock stream
@@ -157,7 +207,7 @@ class LLMService:
             matched_prods = []
             summary = ""
             unverifiable = []
-            
+
             if "tide" in msg_content:
                 matched_prods.append("Tide Hygienic Clean Heavy Duty 10X")
                 summary = "Tide Hygienic Clean Heavy Duty 10X contains Sodium Alcoholethoxy Sulfate, Linear Alkylbenzene Sulfonate, Propylene Glycol, Sodium Borate, and Water. It is designed for heavy-duty cleaning and removing grease."
@@ -188,13 +238,13 @@ class LLMService:
         Heuristic generator for the final response when in mock mode.
         """
         prompt_lower = prompt.lower()
-        
+
         # Extract safety and escalation flags if they were embedded in the generation prompt
         safety_triggered = "safety_triggered: true" in prompt_lower or "safety_triggered=true" in prompt_lower or "swallow" in prompt_lower or "rash" in prompt_lower or "allergic" in prompt_lower
         tone_angry = "furious" in prompt_lower or "annoyed" in prompt_lower or "sue" in prompt_lower or "horrible" in prompt_lower
-        
+
         escalated = safety_triggered or tone_angry
-        
+
         # Basic grounding responses based on brand keywords
         grounded_info = ""
         if "tide" in prompt_lower:
@@ -207,15 +257,15 @@ class LLMService:
             grounded_info = "Gillette Labs Exfoliating Razor features an exfoliating bar to remove dirt before blades pass. It uses stainless steel blades and a lubricating strip. Handle sharp blades with care. It is available at Walmart, CVS, and gillette.com."
 
         response_parts = []
-        
+
         # 1. Apology if angry
         if tone_angry:
             response_parts.append("I am very sorry to hear about your experience and understand your frustration.")
-            
+
         # 2. General Safety guidance if triggered
         if safety_triggered:
             response_parts.append("Your safety is our top priority. Please stop using the product immediately. If someone ingested the product or is experiencing a severe reaction, contact a healthcare professional or Poison Control right away.")
-            
+
         # 3. Grounded answer/recommendation
         if grounded_info:
             response_parts.append(f"Regarding your query: {grounded_info}")
@@ -233,3 +283,8 @@ class LLMService:
             response_parts.append("I have flagged this conversation for a human support representative who will follow up with you as soon as possible.")
 
         return " ".join(response_parts)
+
+    def close(self):
+        """Close the HTTP client connection."""
+        if self.client:
+            self.client.close()
