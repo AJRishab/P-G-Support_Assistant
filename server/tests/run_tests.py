@@ -11,7 +11,9 @@ from tests.test_engine import (
     test_sentiment_agent_furious,
     test_sentiment_agent_calm,
     test_product_agent_search,
-    test_product_agent_grounding
+    test_product_agent_grounding,
+    test_product_agent_semantic_search_used_when_llm_available,
+    test_product_agent_semantic_search_skipped_in_mock_mode
 )
 from tests.test_storage import (
     test_session_persistence_across_restart,
@@ -70,6 +72,8 @@ async def main():
     success &= run_sync_test("test_sentiment_agent_calm", test_sentiment_agent_calm, llm)
     success &= run_sync_test("test_product_agent_search", test_product_agent_search, llm)
     success &= run_sync_test("test_product_agent_grounding", test_product_agent_grounding, llm)
+    success &= run_sync_test("test_product_agent_semantic_search_used_when_llm_available", test_product_agent_semantic_search_used_when_llm_available, llm)
+    success &= run_sync_test("test_product_agent_semantic_search_skipped_in_mock_mode", test_product_agent_semantic_search_skipped_in_mock_mode, llm)
 
     # 2. Storage tests
     db_path = "test_pg_support.db"

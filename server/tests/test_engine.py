@@ -12,7 +12,7 @@ from src.agents.product_agent import ProductAgent
 
 @pytest.fixture
 def llm_service():
-    # Uses mock mode if GEMINI_API_KEY is not set
+    # Uses mock mode if OPENROUTER_API_KEY is not set
     return LLMService()
 
 def test_safety_agent_triggered(llm_service):
@@ -66,3 +66,60 @@ def test_product_agent_grounding(llm_service):
     # Grounded response should contain the ingredients or summary
     assert len(res["relevant_products_found"]) > 0
     assert "Sodium Borate" in res["grounded_summary"] or "Sodium Alcoholethoxy Sulfate" in res["grounded_summary"]
+
+def test_product_agent_semantic_search_used_when_llm_available(llm_service):
+    """
+    "I look tired around the eyes lately, is there anything for that?" shares no
+    keywords with any catalog entry (no "skin", "moisturizer", "face", "olay",
+    etc.), so the keyword pass genuinely comes back empty. Once a real LLM is
+    configured, search_catalog should escalate to the semantic pass and trust
+    its judgement.
+
+    The LLM call itself is stubbed (not the network) so this test has no
+    external dependency. It also asserts the stub was actually invoked, so a
+    coincidental keyword match can't make this pass for the wrong reason.
+    """
+    product_agent = ProductAgent(llm_service)
+    query = "I look tired around the eyes lately, is there anything for that?"
+
+    # Sanity check the test's own premise: keyword pass alone finds nothing here.
+    assert product_agent._keyword_search(query) == []
+
+    original_use_mock = llm_service.use_mock
+    original_generate_json = llm_service.generate_json
+    call_count = {"n": 0}
+    def fake_generate_json(prompt, schema_class=None):
+        call_count["n"] += 1
+        return {"matched_product_ids": ["olay-regenerist-whip"]}
+    try:
+        llm_service.use_mock = False  # simulate a configured real API key
+        llm_service.generate_json = fake_generate_json
+
+        results = product_agent.search_catalog(query)
+        assert call_count["n"] == 1  # proves the semantic pass actually ran
+        assert len(results) == 1
+        assert results[0]["brand"] == "Olay"
+    finally:
+        llm_service.use_mock = original_use_mock
+        llm_service.generate_json = original_generate_json
+
+def test_product_agent_semantic_search_skipped_in_mock_mode(llm_service):
+    """
+    In mock mode there is no real model to reason with, so search_catalog must
+    never attempt the semantic pass - even for phrasing the keyword list misses.
+    A keyword miss in mock mode should just return no results, not call the LLM.
+    """
+    product_agent = ProductAgent(llm_service)
+    assert llm_service.use_mock is True  # no OPENROUTER_API_KEY in this test env
+    query = "I look tired around the eyes lately, is there anything for that?"
+    assert product_agent._keyword_search(query) == []
+
+    original_generate_json = llm_service.generate_json
+    def fail_if_called(prompt, schema_class=None):
+        raise AssertionError("generate_json must not be called for semantic search in mock mode")
+    try:
+        llm_service.generate_json = fail_if_called
+        results = product_agent.search_catalog(query)
+        assert results == []
+    finally:
+        llm_service.generate_json = original_generate_json

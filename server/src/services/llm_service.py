@@ -8,8 +8,12 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # OpenRouter configuration
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# Default model - can be overridden
-DEFAULT_MODEL = "open_router/openrouter/free"
+# Default model - can be overridden.
+# "openrouter/free" is OpenRouter's Free Models Router alias, which auto-selects
+# a free model per request. (The old value, "open_router/openrouter/free", had a
+# stray "open_router/" prefix and is not a valid OpenRouter model slug - every
+# live API call would fail and silently fall back to mock mode.)
+DEFAULT_MODEL = "openrouter/free"
 
 
 class LLMService:

@@ -9,6 +9,15 @@ class ProductEvaluation(BaseModel):
     grounded_summary: str = Field(description="Summary of facts specifically and only found in the provided product details, answering the customer's questions.")
     unverifiable_questions: list[str] = Field(description="Any customer questions that could not be verified or answered using the provided product details.")
 
+class ProductMatch(BaseModel):
+    matched_product_ids: list[str] = Field(
+        description=(
+            "IDs of catalog products that genuinely match the customer's underlying need, "
+            "even if the message shares no exact keywords with the catalog entry. "
+            "Return an empty list if nothing in the catalog is relevant."
+        )
+    )
+
 class ProductAgent:
     def __init__(self, llm_service: LLMService):
         self.llm_service = llm_service
@@ -28,10 +37,13 @@ class ProductAgent:
             print(f"[ProductAgent Error] Failed to load products.json from {path}: {e}")
             return []
 
-    def search_catalog(self, query: str) -> list:
+    def _keyword_search(self, query: str) -> list:
         """
-        Performs a keyword-based search on the product catalog.
-        Matches brand, name, category, purpose, and ingredients.
+        Fast, dependency-free lexical pass over the catalog: matches brand, name,
+        category, and ingredients that are directly mentioned in the query.
+        This is the only pass available in mock mode (no LLM to reason with), and
+        it's always tried first even when a real LLM is configured, since it's free
+        and instantly resolves the common case of the customer naming the brand/product.
         """
         query_lower = query.lower()
         matched = []
@@ -53,8 +65,6 @@ class ProductAgent:
                     break
 
         for prod in self.products:
-            prod_str = json.dumps(prod).lower()
-            
             # Direct text match or brand association
             is_match = False
             if prod["brand"].lower() in matched_brands:
@@ -70,6 +80,58 @@ class ProductAgent:
                 matched.append(prod)
 
         return matched
+
+    def _semantic_search(self, query: str) -> list:
+        """
+        LLM-based retrieval pass: matches the query against the catalog by underlying
+        need rather than exact words, catching paraphrases the keyword pass misses
+        (e.g. "my face looks tired around the eyes" -> Olay, with no mention of
+        "skin", "moisturizer", or the brand name).
+
+        Only meaningful when a real LLM is configured. Callers should check
+        `llm_service.use_mock` before calling this, and treat the result as
+        best-effort, falling back to `_keyword_search` results on any failure.
+        """
+        catalog_brief = "\n".join(
+            f"- id: {p['id']} | brand: {p['brand']} | category: {p['category']} | purpose: {p['purpose']}"
+            for p in self.products
+        )
+        prompt = (
+            "You are the retrieval step of the Product Agent for P&G Customer Support.\n"
+            "Below is the full product catalog (id, brand, category, purpose). Decide which products, "
+            "if any, genuinely match what the customer is describing - based on their underlying need, "
+            "not just literal keyword overlap. Customers often describe a problem or symptom without "
+            "naming the brand, category, or product type.\n\n"
+            f"=== CATALOG ===\n{catalog_brief}\n\n"
+            f"=== CUSTOMER MESSAGE ===\n\"{query}\"\n\n"
+            "Return a JSON object with matched_product_ids. Only include a product if it truly answers "
+            "the need described - return an empty list rather than guessing the closest available option."
+        )
+        result = self.llm_service.generate_json(prompt, schema_class=ProductMatch)
+        matched_ids = set(result.get("matched_product_ids", []) or [])
+        return [p for p in self.products if p["id"] in matched_ids]
+
+    def search_catalog(self, query: str) -> list:
+        """
+        Step 2: Retrieves matching products for a customer query.
+
+        Two-tier search:
+        1. Keyword/brand match (fast, free, works with or without an LLM configured).
+        2. If that finds nothing and a real LLM is available, an LLM-based semantic
+           pass catches paraphrased or needs-based questions that share no keywords
+           with the catalog. In mock mode this second tier is skipped entirely, since
+           there is no real model available to reason with - the heuristic mock engine
+           only knows how to fake the grounding step, not open-ended retrieval.
+        """
+        matched = self._keyword_search(query)
+        if matched or getattr(self.llm_service, "use_mock", True):
+            return matched
+
+        try:
+            return self._semantic_search(query)
+        except Exception as e:
+            print(f"[ProductAgent Error] Semantic search failed: {e}. Falling back to keyword results.")
+            return matched
 
     def analyze_and_ground(self, message: str, conversation_history: list = None) -> dict:
         """
