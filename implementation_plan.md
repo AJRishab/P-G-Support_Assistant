@@ -6,22 +6,7 @@ This plan outlines the architecture, design, and step-by-step build order for th
 
 We will implement a web application featuring a **Python (FastAPI) backend** and a **React/Vite frontend** (with Vanilla CSS). The backend will employ a multi-agent collaboration model:
 
-```mermaid
-graph TD
-    Client[React Frontend] -->|1. Message / Session ID| Orchestrator[Orchestrator Agent]
-    
-    subgraph Backend Multi-Agent System
-        Orchestrator -->|2. Safety Scan request| SafetyAgent[Safety Agent]
-        Orchestrator -->|3. Query & Ground request| ProductAgent[Product Agent]
-        Orchestrator -->|4. Sentiment Scan request| SentimentAgent[Sentiment Agent]
-        
-        ProductAgent <-->|Lookups| KB[(Product KB JSON)]
-        Orchestrator -->|5. Log Escalations| HandoffManager[Handoff Manager]
-    end
-    
-    HandoffManager -->|If Triggered| TicketsDB[(Tickets DB / SQLite)]
-    Orchestrator -->|6. SSE Stream Reply| Client
-```
+![alt text](image.png)
 
 ### Key Technical Decisions
 1. **Multi-Agent Design**:
