@@ -26,7 +26,7 @@ pg-support-assistant/
 │   │   │   └── sentiment_agent.py    # tone classifier
 │   │   ├── services/
 │   │   │   ├── db_service.py         # SQLite connection manager
-│   │   │   └── llm_service.py        # Gemini API / rule-based fallback mock
+│   │   │   └── llm_service.py        # OpenRouter API / rule-based fallback mock
 │   │   └── main.py                   # FastAPI server endpoints
 │   ├── tests/
 │   │   ├── test_engine.py            # isolated agent tests
@@ -53,13 +53,13 @@ Make sure you have Python 3.8+ and Node.js 16+ installed.
 
 ### 1. Start the Backend Server
 
-Set your Gemini API key (optional - the system uses a fully capable mock mode if not present):
+Set your OpenRouter API key (required for full functionality - the system uses a fully capable mock mode if not present):
 ```bash
 # Windows (CMD)
-set GEMINI_API_KEY=your_key_here
+set OPENROUTER_API_KEY=your_key_here
 
 # Windows (PowerShell)
-$env:GEMINI_API_KEY="your_key_here"
+$env:OPENROUTER_API_KEY="your_key_here"
 ```
 
 Install requirements and run:
