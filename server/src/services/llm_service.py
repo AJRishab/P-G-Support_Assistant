@@ -3,18 +3,29 @@ import json
 import re
 import asyncio
 import httpx
+from dotenv import load_dotenv
+
+# Load variables from a .env file (if one exists) into the process environment.
+# This does NOT override a real environment variable that's already set (e.g.
+# one exported in the shell, or injected by a deployment platform) - it only
+# fills in ones that are still unset. Without this call, a .env file copied
+# from .env.example was silently ignored: os.getenv() only sees real process
+# environment variables, not the contents of a .env file, unless something
+# explicitly loads it first - which nothing here did before.
+load_dotenv()
 
 # Load OPENROUTER_API_KEY from env
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # OpenRouter configuration
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# Default model - can be overridden.
+# Default model - can be overridden via the OPENROUTER_MODEL env var (see
+# .env.example), or by passing model_name= directly to LLMService().
 # "openrouter/free" is OpenRouter's Free Models Router alias, which auto-selects
-# a free model per request. (The old value, "open_router/openrouter/free", had a
-# stray "open_router/" prefix and is not a valid OpenRouter model slug - every
+# a free model per request. (An earlier value, "open_router/openrouter/free", had
+# a stray "open_router/" prefix and was not a valid OpenRouter model slug - every
 # live API call would fail and silently fall back to mock mode.)
-DEFAULT_MODEL = "openrouter/free"
+DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL") or "openrouter/free"
 
 # Shared request headers for every OpenRouter call (both generate_json and
 # generate_stream use a fresh AsyncClient per call, so this avoids repeating
@@ -31,6 +42,16 @@ class LLMService:
     def __init__(self, model_name: str = None):
         self.use_mock = not bool(OPENROUTER_API_KEY)
         self.model_name = model_name or DEFAULT_MODEL
+
+        # Make the active mode impossible to miss - this exact ambiguity (is it
+        # actually calling a real LLM right now, or silently still on the mock
+        # engine?) is otherwise invisible anywhere in the app.
+        if self.use_mock:
+            print("[LLMService] Running in MOCK mode (no OPENROUTER_API_KEY found) - "
+                  "responses come from the rule-based mock engine, not a real LLM. "
+                  "See server/.env.example to configure a real key.")
+        else:
+            print(f"[LLMService] Running in LIVE mode - calling OpenRouter with model '{self.model_name}'.")
 
     async def _call_openrouter(self, messages: list, schema_class=None) -> dict:
         """
