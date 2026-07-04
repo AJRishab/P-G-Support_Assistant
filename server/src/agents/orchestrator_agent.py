@@ -21,7 +21,21 @@ class OrchestratorAgent:
         # Step 8: Load existing history from DB
         history = []
         if self.db_service:
-            history = self.db_service.get_history(session_id)
+            history = await self.db_service.get_history(session_id)
+
+        # Safety, Product, and Sentiment are independent of each other's output
+        # (Product only needs `history`, already loaded above) - so kick all three
+        # off concurrently right away instead of running them one after another.
+        # The progress messages below are still yielded in sequence, with their
+        # original pacing, purely for the UI's step-by-step display; the real
+        # work is already running in the background by the time each message
+        # appears, so total wall-clock time is roughly the slowest of the three
+        # calls instead of the sum of all three run one after another.
+        pipeline_task = asyncio.gather(
+            self.safety_agent.analyze(message),
+            self.product_agent.analyze_and_ground(message, history),
+            self.sentiment_agent.analyze(message),
+        )
 
         # Yield Progress Step 1: Safety Check
         yield json.dumps({
@@ -32,11 +46,6 @@ class OrchestratorAgent:
         }) + "\n"
         await asyncio.sleep(0.4) # Small delay for visual progress simulation
 
-        safety_res = self.safety_agent.analyze(message)
-        safety_triggered = safety_res.get("safety_triggered", False)
-        safety_reason = safety_res.get("reason", "")
-        urgency = safety_res.get("urgency", "low")
-
         # Yield Progress Step 2 & 3: Product Search & Grounding
         yield json.dumps({
             "type": "progress",
@@ -45,10 +54,6 @@ class OrchestratorAgent:
             "message": "Product Agent querying trustworthy database and checking grounding..."
         }) + "\n"
         await asyncio.sleep(0.4)
-
-        product_res = self.product_agent.analyze_and_ground(message, history)
-        grounded_facts = product_res.get("grounded_summary", "")
-        unverifiable = product_res.get("unverifiable_questions", [])
 
         # Yield Progress Step 4: Sentiment Assessment
         yield json.dumps({
@@ -59,7 +64,18 @@ class OrchestratorAgent:
         }) + "\n"
         await asyncio.sleep(0.4)
 
-        sentiment_res = self.sentiment_agent.analyze(message)
+        # All three results are awaited here. If the real calls took longer than
+        # the ~1.2s of pacing above, this simply waits for whichever is slowest -
+        # it never adds the three durations together the way sequential calls did.
+        safety_res, product_res, sentiment_res = await pipeline_task
+
+        safety_triggered = safety_res.get("safety_triggered", False)
+        safety_reason = safety_res.get("reason", "")
+        urgency = safety_res.get("urgency", "low")
+
+        grounded_facts = product_res.get("grounded_summary", "")
+        unverifiable = product_res.get("unverifiable_questions", [])
+
         tone = sentiment_res.get("tone", "calm")
 
         # Step 5: Decide whether a human needs to step in
@@ -82,7 +98,7 @@ class OrchestratorAgent:
             await asyncio.sleep(0.4)
 
             if self.db_service:
-                self.db_service.create_ticket(
+                await self.db_service.create_ticket(
                     session_id=session_id,
                     user_message=message,
                     reason=reason,
@@ -140,7 +156,7 @@ class OrchestratorAgent:
         # Step 8: Save history to DB
         if self.db_service:
             # Save user message
-            self.db_service.save_message(session_id, "user", message)
+            await self.db_service.save_message(session_id, "user", message)
             # Save assistant response
             full_reply_str = "".join(full_reply)
-            self.db_service.save_message(session_id, "assistant", full_reply_str)
+            await self.db_service.save_message(session_id, "assistant", full_reply_str)

@@ -15,59 +15,66 @@ def llm_service():
     # Uses mock mode if OPENROUTER_API_KEY is not set
     return LLMService()
 
-def test_safety_agent_triggered(llm_service):
+@pytest.mark.asyncio
+async def test_safety_agent_triggered(llm_service):
     safety_agent = SafetyAgent(llm_service)
     
     # Urgent safety ingestion query
-    res = safety_agent.analyze("My toddler swallowed a Tide pod. What should I do?")
+    res = await safety_agent.analyze("My toddler swallowed a Tide pod. What should I do?")
     assert res["safety_triggered"] is True
     assert res["urgency"] == "high"
 
     # Calm safety query
-    res2 = safety_agent.analyze("I developed a severe allergic skin rash after using Gillette blades.")
+    res2 = await safety_agent.analyze("I developed a severe allergic skin rash after using Gillette blades.")
     assert res2["safety_triggered"] is True
     assert res2["urgency"] in ["medium", "high"]
 
-def test_safety_agent_not_triggered(llm_service):
+@pytest.mark.asyncio
+async def test_safety_agent_not_triggered(llm_service):
     safety_agent = SafetyAgent(llm_service)
     
-    res = safety_agent.analyze("Where can I buy Tide detergent online?")
+    res = await safety_agent.analyze("Where can I buy Tide detergent online?")
     assert res["safety_triggered"] is False
 
-def test_sentiment_agent_furious(llm_service):
+@pytest.mark.asyncio
+async def test_sentiment_agent_furious(llm_service):
     sentiment_agent = SentimentAgent(llm_service)
     
-    res = sentiment_agent.analyze("This olay product is garbage and absolute trash! I am going to sue you!")
+    res = await sentiment_agent.analyze("This olay product is garbage and absolute trash! I am going to sue you!")
     assert res["tone"] == "furious"
 
-def test_sentiment_agent_calm(llm_service):
+@pytest.mark.asyncio
+async def test_sentiment_agent_calm(llm_service):
     sentiment_agent = SentimentAgent(llm_service)
     
-    res = sentiment_agent.analyze("Can you recommend a skincare product for sensitive skin?")
+    res = await sentiment_agent.analyze("Can you recommend a skincare product for sensitive skin?")
     assert res["tone"] == "calm"
 
-def test_product_agent_search(llm_service):
+@pytest.mark.asyncio
+async def test_product_agent_search(llm_service):
     product_agent = ProductAgent(llm_service)
     
     # Keyword search Tide
-    tide_prods = product_agent.search_catalog("Tide detergent details")
+    tide_prods = await product_agent.search_catalog("Tide detergent details")
     assert len(tide_prods) > 0
     assert tide_prods[0]["brand"] == "Tide"
 
     # Keyword search sensitive skin (should find Olay)
-    olay_prods = product_agent.search_catalog("sensitive skin moisturizer")
+    olay_prods = await product_agent.search_catalog("sensitive skin moisturizer")
     assert len(olay_prods) > 0
     assert any(p["brand"] == "Olay" for p in olay_prods)
 
-def test_product_agent_grounding(llm_service):
+@pytest.mark.asyncio
+async def test_product_agent_grounding(llm_service):
     product_agent = ProductAgent(llm_service)
-    res = product_agent.analyze_and_ground("What are the ingredients in Tide Hygienic Clean?")
+    res = await product_agent.analyze_and_ground("What are the ingredients in Tide Hygienic Clean?")
     
     # Grounded response should contain the ingredients or summary
     assert len(res["relevant_products_found"]) > 0
     assert "Sodium Borate" in res["grounded_summary"] or "Sodium Alcoholethoxy Sulfate" in res["grounded_summary"]
 
-def test_product_agent_semantic_search_used_when_llm_available(llm_service):
+@pytest.mark.asyncio
+async def test_product_agent_semantic_search_used_when_llm_available(llm_service):
     """
     "I look tired around the eyes lately, is there anything for that?" shares no
     keywords with any catalog entry (no "skin", "moisturizer", "face", "olay",
@@ -88,14 +95,14 @@ def test_product_agent_semantic_search_used_when_llm_available(llm_service):
     original_use_mock = llm_service.use_mock
     original_generate_json = llm_service.generate_json
     call_count = {"n": 0}
-    def fake_generate_json(prompt, schema_class=None):
+    async def fake_generate_json(prompt, schema_class=None):
         call_count["n"] += 1
         return {"matched_product_ids": ["olay-regenerist-whip"]}
     try:
         llm_service.use_mock = False  # simulate a configured real API key
         llm_service.generate_json = fake_generate_json
 
-        results = product_agent.search_catalog(query)
+        results = await product_agent.search_catalog(query)
         assert call_count["n"] == 1  # proves the semantic pass actually ran
         assert len(results) == 1
         assert results[0]["brand"] == "Olay"
@@ -103,7 +110,8 @@ def test_product_agent_semantic_search_used_when_llm_available(llm_service):
         llm_service.use_mock = original_use_mock
         llm_service.generate_json = original_generate_json
 
-def test_product_agent_semantic_search_skipped_in_mock_mode(llm_service):
+@pytest.mark.asyncio
+async def test_product_agent_semantic_search_skipped_in_mock_mode(llm_service):
     """
     In mock mode there is no real model to reason with, so search_catalog must
     never attempt the semantic pass - even for phrasing the keyword list misses.
@@ -115,11 +123,11 @@ def test_product_agent_semantic_search_skipped_in_mock_mode(llm_service):
     assert product_agent._keyword_search(query) == []
 
     original_generate_json = llm_service.generate_json
-    def fail_if_called(prompt, schema_class=None):
+    async def fail_if_called(prompt, schema_class=None):
         raise AssertionError("generate_json must not be called for semantic search in mock mode")
     try:
         llm_service.generate_json = fail_if_called
-        results = product_agent.search_catalog(query)
+        results = await product_agent.search_catalog(query)
         assert results == []
     finally:
         llm_service.generate_json = original_generate_json

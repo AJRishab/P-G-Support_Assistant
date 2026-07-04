@@ -81,7 +81,7 @@ class ProductAgent:
 
         return matched
 
-    def _semantic_search(self, query: str) -> list:
+    async def _semantic_search(self, query: str) -> list:
         """
         LLM-based retrieval pass: matches the query against the catalog by underlying
         need rather than exact words, catching paraphrases the keyword pass misses
@@ -107,11 +107,11 @@ class ProductAgent:
             "Return a JSON object with matched_product_ids. Only include a product if it truly answers "
             "the need described - return an empty list rather than guessing the closest available option."
         )
-        result = self.llm_service.generate_json(prompt, schema_class=ProductMatch)
+        result = await self.llm_service.generate_json(prompt, schema_class=ProductMatch)
         matched_ids = set(result.get("matched_product_ids", []) or [])
         return [p for p in self.products if p["id"] in matched_ids]
 
-    def search_catalog(self, query: str) -> list:
+    async def search_catalog(self, query: str) -> list:
         """
         Step 2: Retrieves matching products for a customer query.
 
@@ -128,24 +128,24 @@ class ProductAgent:
             return matched
 
         try:
-            return self._semantic_search(query)
+            return await self._semantic_search(query)
         except Exception as e:
             print(f"[ProductAgent Error] Semantic search failed: {e}. Falling back to keyword results.")
             return matched
 
-    def analyze_and_ground(self, message: str, conversation_history: list = None) -> dict:
+    async def analyze_and_ground(self, message: str, conversation_history: list = None) -> dict:
         """
         Handles Step 2 (gather what it needs) and Step 3 (factual grounding).
         Queries the catalog and synthesizes the grounded answer, indicating what couldn't be answered.
         """
         # Step 2: Query catalog
-        matched_products = self.search_catalog(message)
+        matched_products = await self.search_catalog(message)
         
         # If history is present and no products were found, search on history too
         if not matched_products and conversation_history:
             recent_user_messages = [h["content"] for h in conversation_history[-3:] if h["role"] == "user"]
             for prev_msg in recent_user_messages:
-                matched_products = self.search_catalog(prev_msg)
+                matched_products = await self.search_catalog(prev_msg)
                 if matched_products:
                     break
 
@@ -173,7 +173,7 @@ class ProductAgent:
         )
 
         try:
-            result = self.llm_service.generate_json(prompt, schema_class=ProductEvaluation)
+            result = await self.llm_service.generate_json(prompt, schema_class=ProductEvaluation)
             return {
                 "relevant_products_found": result.get("relevant_products_found", [p["name"] for p in matched_products]),
                 "grounded_summary": result.get("grounded_summary", ""),

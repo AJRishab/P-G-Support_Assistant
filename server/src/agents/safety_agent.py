@@ -10,7 +10,7 @@ class SafetyAgent:
     def __init__(self, llm_service: LLMService):
         self.llm_service = llm_service
 
-    def analyze(self, message: str) -> dict:
+    async def analyze(self, message: str) -> dict:
         """
         Scans the user message for safety/risk language.
         Step 1: Check for safety concerns first, before anything else.
@@ -28,7 +28,7 @@ class SafetyAgent:
 
         try:
             # Query LLM with schema guidance
-            result = self.llm_service.generate_json(prompt, schema_class=SafetyEvaluation)
+            result = await self.llm_service.generate_json(prompt, schema_class=SafetyEvaluation)
             
             # Ensure return dict has all keys
             return {

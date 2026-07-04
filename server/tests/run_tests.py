@@ -26,27 +26,6 @@ from tests.test_integration import (
 from src.services.llm_service import LLMService
 from src.services.db_service import DBService
 
-class SimpleFixture:
-    def __init__(self, obj, teardown_fn=None):
-        self.obj = obj
-        self.teardown_fn = teardown_fn
-
-    def close(self):
-        if self.teardown_fn:
-            self.teardown_fn()
-
-def run_sync_test(name, test_fn, *args):
-    print(f"Running {name}... ", end="", flush=True)
-    try:
-        test_fn(*args)
-        print("PASSED")
-        return True
-    except Exception as e:
-        print("FAILED")
-        import traceback
-        traceback.print_exc()
-        return False
-
 async def run_async_test(name, test_fn, *args):
     print(f"Running {name}... ", end="", flush=True)
     try:
@@ -65,17 +44,18 @@ async def main():
     llm = LLMService()
     success = True
 
-    # 1. Engine tests
-    success &= run_sync_test("test_safety_agent_triggered", test_safety_agent_triggered, llm)
-    success &= run_sync_test("test_safety_agent_not_triggered", test_safety_agent_not_triggered, llm)
-    success &= run_sync_test("test_sentiment_agent_furious", test_sentiment_agent_furious, llm)
-    success &= run_sync_test("test_sentiment_agent_calm", test_sentiment_agent_calm, llm)
-    success &= run_sync_test("test_product_agent_search", test_product_agent_search, llm)
-    success &= run_sync_test("test_product_agent_grounding", test_product_agent_grounding, llm)
-    success &= run_sync_test("test_product_agent_semantic_search_used_when_llm_available", test_product_agent_semantic_search_used_when_llm_available, llm)
-    success &= run_sync_test("test_product_agent_semantic_search_skipped_in_mock_mode", test_product_agent_semantic_search_skipped_in_mock_mode, llm)
+    # 1. Engine tests (all agent/LLM calls are async now, so every test here
+    # runs through run_async_test rather than the old sync path)
+    success &= await run_async_test("test_safety_agent_triggered", test_safety_agent_triggered, llm)
+    success &= await run_async_test("test_safety_agent_not_triggered", test_safety_agent_not_triggered, llm)
+    success &= await run_async_test("test_sentiment_agent_furious", test_sentiment_agent_furious, llm)
+    success &= await run_async_test("test_sentiment_agent_calm", test_sentiment_agent_calm, llm)
+    success &= await run_async_test("test_product_agent_search", test_product_agent_search, llm)
+    success &= await run_async_test("test_product_agent_grounding", test_product_agent_grounding, llm)
+    success &= await run_async_test("test_product_agent_semantic_search_used_when_llm_available", test_product_agent_semantic_search_used_when_llm_available, llm)
+    success &= await run_async_test("test_product_agent_semantic_search_skipped_in_mock_mode", test_product_agent_semantic_search_skipped_in_mock_mode, llm)
 
-    # 2. Storage tests
+    # 2. Storage tests (DBService is backed by aiosqlite now, so these are async too)
     db_path = "test_pg_support.db"
     def cleanup_db():
         if os.path.exists(db_path):
@@ -86,12 +66,12 @@ async def main():
     
     cleanup_db()
     db = DBService(db_path=db_path)
-    success &= run_sync_test("test_session_persistence_across_restart", test_session_persistence_across_restart, db)
+    success &= await run_async_test("test_session_persistence_across_restart", test_session_persistence_across_restart, db)
     cleanup_db()
 
     cleanup_db()
     db = DBService(db_path=db_path)
-    success &= run_sync_test("test_ticket_creation_and_retrieval", test_ticket_creation_and_retrieval, db)
+    success &= await run_async_test("test_ticket_creation_and_retrieval", test_ticket_creation_and_retrieval, db)
     cleanup_db()
 
     # 3. Integration tests

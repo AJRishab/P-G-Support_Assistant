@@ -8,7 +8,7 @@ class SentimentAgent:
     def __init__(self, llm_service: LLMService):
         self.llm_service = llm_service
 
-    def analyze(self, message: str) -> dict:
+    async def analyze(self, message: str) -> dict:
         """
         Independently assesses the emotional tone of what the customer said.
         Step 4: Separately judge how the customer is feeling.
@@ -24,7 +24,7 @@ class SentimentAgent:
         )
 
         try:
-            result = self.llm_service.generate_json(prompt, schema_class=SentimentEvaluation)
+            result = await self.llm_service.generate_json(prompt, schema_class=SentimentEvaluation)
             tone = str(result.get("tone", "calm")).lower()
             if tone not in ["calm", "annoyed", "furious"]:
                 tone = "calm"

@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import asyncio
 import httpx
 
 # Load OPENROUTER_API_KEY from env
@@ -15,29 +16,32 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # live API call would fail and silently fall back to mock mode.)
 DEFAULT_MODEL = "openrouter/free"
 
+# Shared request headers for every OpenRouter call (both generate_json and
+# generate_stream use a fresh AsyncClient per call, so this avoids repeating
+# the same header dict in two places).
+REQUEST_HEADERS = {
+    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+    "HTTP-Referer": "https://github.com/AJRishab/pg-support-assistant",
+    "X-Title": "PG Support Assistant",
+    "Content-Type": "application/json",
+}
+
 
 class LLMService:
     def __init__(self, model_name: str = None):
         self.use_mock = not bool(OPENROUTER_API_KEY)
         self.model_name = model_name or DEFAULT_MODEL
 
-        if not self.use_mock:
-            # Initialize HTTP client for OpenRouter
-            self.client = httpx.Client(
-                timeout=30.0,
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "HTTP-Referer": "https://github.com/AJRishab/pg-support-assistant",
-                    "X-Title": "PG Support Assistant",
-                    "Content-Type": "application/json",
-                }
-            )
-        else:
-            self.client = None
-
-    def _call_openrouter(self, messages: list, schema_class=None) -> dict:
+    async def _call_openrouter(self, messages: list, schema_class=None) -> dict:
         """
-        Makes a request to OpenRouter API and returns the JSON response.
+        Makes an async request to the OpenRouter API and returns the parsed JSON body.
+
+        Uses a fresh httpx.AsyncClient per call (matching the pattern already used
+        by generate_stream below) instead of a shared synchronous client. The
+        previous implementation used a blocking httpx.Client here, which stalled
+        the entire FastAPI event loop for the duration of every single call -
+        under concurrent load, one user's classification request would freeze
+        every other in-flight request on the server.
         """
         payload = {
             "model": self.model_name,
@@ -46,36 +50,43 @@ class LLMService:
             "max_tokens": 4000,
         }
 
-        if schema_class:
-            # For structured output, we can use response_format parameter
-            # Note: OpenRouter supports OpenAI-compatible structured output
+        if schema_class and hasattr(schema_class, "model_json_schema"):
+            # OpenRouter (mirroring the OpenAI Structured Outputs spec) expects
+            # json_schema to be an object with name/strict/schema fields, with the
+            # actual JSON Schema nested under "schema" - not the raw schema object
+            # itself. The previous code passed model_json_schema() directly as
+            # json_schema, which is missing the required "name" field and would
+            # likely be rejected (or silently ignored) by the API.
             payload["response_format"] = {
                 "type": "json_schema",
-                "json_schema": schema_class.model_json_schema() if hasattr(schema_class, 'model_json_schema') else None
+                "json_schema": {
+                    "name": schema_class.__name__,
+                    "strict": True,
+                    "schema": schema_class.model_json_schema(),
+                },
             }
 
-        response = self.client.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload)
-        response.raise_for_status()
-
-        data = response.json()
+        async with httpx.AsyncClient(timeout=30.0, headers=REQUEST_HEADERS) as client:
+            response = await client.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload)
+            response.raise_for_status()
+            data = response.json()
 
         # Extract the message content
         message_content = data["choices"][0]["message"]["content"]
         return json.loads(message_content.strip())
 
-    def generate_json(self, prompt: str, schema_class=None) -> dict:
+    async def generate_json(self, prompt: str, schema_class=None) -> dict:
         """
         Generates a JSON response from the LLM, with a fallback to mock evaluation
-        if no API key is available.
+        if no API key is available. Async end-to-end so callers (the agents) never
+        block the event loop while a real API call is in flight.
         """
         if self.use_mock:
             return self._mock_json_response(prompt)
 
         try:
-            # Convert the prompt to OpenAI-style messages format
             messages = [{"role": "user", "content": prompt}]
-
-            result = self._call_openrouter(messages, schema_class)
+            result = await self._call_openrouter(messages, schema_class)
             return result
         except Exception as e:
             # Fallback to mock on remote API errors
@@ -89,7 +100,6 @@ class LLMService:
         """
         if self.use_mock:
             # Simulate a streaming response for mock mode
-            import asyncio
             mock_text = self._mock_text_response(prompt, system_instruction)
             words = mock_text.split(" ")
             for i, word in enumerate(words):
@@ -102,15 +112,7 @@ class LLMService:
             if system_instruction:
                 messages.insert(0, {"role": "system", "content": system_instruction})
 
-            async with httpx.AsyncClient(
-                timeout=30.0,
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "HTTP-Referer": "https://github.com/AJRishab/pg-support-assistant",
-                    "X-Title": "PG Support Assistant",
-                    "Content-Type": "application/json",
-                }
-            ) as async_client:
+            async with httpx.AsyncClient(timeout=30.0, headers=REQUEST_HEADERS) as async_client:
                 payload = {
                     "model": self.model_name,
                     "messages": messages,
@@ -137,7 +139,6 @@ class LLMService:
         except Exception as e:
             print(f"[LLMService Error] Streaming failed: {e}. Falling back to mock stream.")
             # Fallback to mock stream
-            import asyncio
             mock_text = self._mock_text_response(prompt, system_instruction)
             words = mock_text.split(" ")
             for i, word in enumerate(words):
@@ -287,8 +288,3 @@ class LLMService:
             response_parts.append("I have flagged this conversation for a human support representative who will follow up with you as soon as possible.")
 
         return " ".join(response_parts)
-
-    def close(self):
-        """Close the HTTP client connection."""
-        if self.client:
-            self.client.close()

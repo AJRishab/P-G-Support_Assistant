@@ -29,13 +29,13 @@ class ChatRequest(BaseModel):
     message: str
 
 @app.get("/api/history")
-def get_chat_history(x_session_id: str = Header(None)):
+async def get_chat_history(x_session_id: str = Header(None)):
     """
     Step 8: Retrieves conversation history for the customer's session.
     """
     if not x_session_id:
         raise HTTPException(status_code=400, detail="X-Session-ID header is missing.")
-    history = db_service.get_history(x_session_id)
+    history = await db_service.get_history(x_session_id)
     return {"history": history}
 
 @app.post("/api/chat")
@@ -53,17 +53,17 @@ async def chat_endpoint(request: ChatRequest, x_session_id: str = Header(None)):
     return StreamingResponse(generator, media_type="text/event-stream")
 
 @app.get("/api/tickets")
-def get_all_tickets():
+async def get_all_tickets():
     """
     Endpoint for the support team dashboard to view human hand-off escalations.
     """
-    tickets = db_service.get_tickets()
+    tickets = await db_service.get_tickets()
     return {"tickets": tickets}
 
 @app.post("/api/tickets/clear")
-def clear_all_data():
+async def clear_all_data():
     """
     Utility endpoint to reset conversation logs and tickets during demos/testing.
     """
-    db_service.clear_database()
+    await db_service.clear_database()
     return {"status": "success", "message": "All data cleared successfully."}

@@ -43,14 +43,14 @@ async def test_integration_safety_escalation(db_service):
     assert len(chunk_events) > 0
     
     # Check that a ticket was logged in the DB
-    tickets = db_service.get_tickets()
+    tickets = await db_service.get_tickets()
     assert len(tickets) == 1
     assert tickets[0]["session_id"] == session_id
     assert "Safety Concern" in tickets[0]["reason"]
     assert tickets[0]["urgency"] == "high"
     
     # Check that history was saved in DB
-    history = db_service.get_history(session_id)
+    history = await db_service.get_history(session_id)
     assert len(history) == 2
     assert history[0]["role"] == "user"
     assert history[0]["content"] == message
@@ -72,7 +72,7 @@ async def test_integration_angry_escalation(db_service):
         responses.append(event)
         
     # Check that a ticket was logged for negative tone
-    tickets = db_service.get_tickets()
+    tickets = await db_service.get_tickets()
     assert len(tickets) == 1
     assert tickets[0]["session_id"] == session_id
     assert "Negative Tone" in tickets[0]["reason"]

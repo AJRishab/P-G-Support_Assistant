@@ -1,27 +1,28 @@
-import os
 import sqlite3
+import aiosqlite
 
 class DBService:
     def __init__(self, db_path="pg_support.db"):
         self.db_path = db_path
         self._init_db()
 
-    def _get_connection(self):
-        """
-        Returns a standard connection. In SQLite, it's best to open a connection
-        per thread/request to avoid threading conflicts.
-        """
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
     def _init_db(self):
         """
-        Initializes the schema for conversations history and handoff tickets.
+        Initializes the schema for conversation history and handoff tickets.
+
+        This stays synchronous and runs once at construction time - a brief
+        blocking call here is fine since it happens before the server starts
+        accepting requests, not on the request path (unlike the per-request
+        methods below, which use aiosqlite so they never block the event loop).
         """
-        conn = self._get_connection()
+        conn = sqlite3.connect(self.db_path)
         try:
             with conn:
+                # WAL mode lets readers and a writer proceed concurrently instead
+                # of blocking each other - this is a database-level setting
+                # persisted in the file itself, so it only needs to be set once.
+                conn.execute("PRAGMA journal_mode=WAL")
+
                 # Create messages table
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS messages (
@@ -44,65 +45,59 @@ class DBService:
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                # Every lookup filters by session_id - without an index this was
+                # a full table scan on every single chat message and page load.
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_tickets_session_id ON tickets(session_id)")
         finally:
             conn.close()
 
-    def save_message(self, session_id: str, role: str, content: str):
+    async def save_message(self, session_id: str, role: str, content: str):
         """
         Saves a message to the conversation history.
         """
-        conn = self._get_connection()
-        try:
-            with conn:
-                conn.execute(
-                    "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-                    (session_id, role, content)
-                )
-        finally:
-            conn.close()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
+                (session_id, role, content)
+            )
+            await conn.commit()
 
-    def get_history(self, session_id: str) -> list:
+    async def get_history(self, session_id: str) -> list:
         """
         Retrieves the conversation history for a given session ID.
         """
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
                 "SELECT role, content FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
                 (session_id,)
-            )
-            rows = cursor.fetchall()
+            ) as cursor:
+                rows = await cursor.fetchall()
             return [{"role": r["role"], "content": r["content"]} for r in rows]
-        finally:
-            conn.close()
 
-    def create_ticket(self, session_id: str, user_message: str, reason: str, tone: str, urgency: str):
+    async def create_ticket(self, session_id: str, user_message: str, reason: str, tone: str, urgency: str):
         """
         Logs a human support follow-up ticket.
         """
-        conn = self._get_connection()
-        try:
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO tickets (session_id, user_message, reason, tone, urgency)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (session_id, user_message, reason, tone, urgency)
-                )
-        finally:
-            conn.close()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO tickets (session_id, user_message, reason, tone, urgency)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, user_message, reason, tone, urgency)
+            )
+            await conn.commit()
 
-    def get_tickets(self) -> list:
+    async def get_tickets(self) -> list:
         """
         Retrieves all support tickets logged (for the admin view).
         """
-        conn = self._get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tickets ORDER BY timestamp DESC")
-            rows = cursor.fetchall()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute("SELECT * FROM tickets ORDER BY timestamp DESC") as cursor:
+                rows = await cursor.fetchall()
             return [
                 {
                     "ticket_id": r["ticket_id"],
@@ -115,17 +110,12 @@ class DBService:
                 }
                 for r in rows
             ]
-        finally:
-            conn.close()
 
-    def clear_database(self):
+    async def clear_database(self):
         """
         Helper method to reset database for testing.
         """
-        conn = self._get_connection()
-        try:
-            with conn:
-                conn.execute("DELETE FROM messages")
-                conn.execute("DELETE FROM tickets")
-        finally:
-            conn.close()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("DELETE FROM messages")
+            await conn.execute("DELETE FROM tickets")
+            await conn.commit()
