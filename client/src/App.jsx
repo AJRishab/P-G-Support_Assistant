@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  MessageSquare, 
-  Send, 
-  AlertTriangle, 
-  ShieldAlert, 
-  UserCheck, 
-  RefreshCw, 
-  Layers, 
-  Sparkles, 
+import {
+  MessageSquare,
+  Send,
+  AlertTriangle,
+  ShieldAlert,
+  UserCheck,
+  RefreshCw,
+  Layers,
+  Sparkles,
   CheckCircle,
   Clock,
   Trash2,
@@ -60,12 +60,12 @@ function App() {
       if (res.ok) {
         const data = await res.json();
         setMessages(data.history || []);
-        
+
         // Infer escalation status from history messages
-        const hasEscalated = data.history.some(msg => 
-          msg.role === 'assistant' && 
-          (msg.content.includes('human support representative') || 
-           msg.content.includes('human follow-up'))
+        const hasEscalated = data.history.some(msg =>
+          msg.role === 'assistant' &&
+          (msg.content.includes('human support representative') ||
+            msg.content.includes('human follow-up'))
         );
         setIsEscalated(hasEscalated);
       }
@@ -174,7 +174,7 @@ function App() {
           if (line.trim()) {
             try {
               const event = JSON.parse(line);
-              
+
               if (event.type === 'progress') {
                 setProgressSteps(prev => {
                   // Avoid duplicates
@@ -182,18 +182,29 @@ function App() {
                   return [...prev, event];
                 });
                 setActiveAgent(event.agent);
-              } 
+              }
               else if (event.type === 'chunk') {
                 setMessages(prev => {
-                  const copy = [...prev];
-                  copy[assistantMessageIndex].content += event.text;
-                  
+                  // Build a brand-new message object instead of mutating the
+                  // existing one in place. React 18 StrictMode intentionally
+                  // calls this updater function twice in development to catch
+                  // exactly this class of bug: if we mutated the shared object,
+                  // the second call would see the first call's mutation already
+                  // applied and append the chunk again on top of it, doubling
+                  // every word. Returning a fresh object each time means both
+                  // calls independently compute the same correct result from
+                  // the same untouched `prev`, so the double-invoke is harmless.
+                  const updatedContent = prev[assistantMessageIndex].content + event.text;
+
                   // Check if this text escalates
-                  if (copy[assistantMessageIndex].content.includes('human support representative') || 
-                      copy[assistantMessageIndex].content.includes('human follow-up')) {
+                  if (updatedContent.includes('human support representative') ||
+                    updatedContent.includes('human follow-up')) {
                     setIsEscalated(true);
                   }
-                  return copy;
+
+                  return prev.map((m, idx) =>
+                    idx === assistantMessageIndex ? { ...m, content: updatedContent } : m
+                  );
                 });
               }
             } catch (err) {
@@ -204,11 +215,13 @@ function App() {
       }
     } catch (err) {
       console.error("Error streaming chat:", err);
-      setMessages(prev => {
-        const copy = [...prev];
-        copy[assistantMessageIndex].content = "I'm sorry, I encountered a communication error with our support system. Please try again.";
-        return copy;
-      });
+      setMessages(prev =>
+        prev.map((m, idx) =>
+          idx === assistantMessageIndex
+            ? { ...m, content: "I'm sorry, I encountered a communication error with our support system. Please try again." }
+            : m
+        )
+      );
     } finally {
       setIsLoading(false);
       setActiveAgent(null);
@@ -241,24 +254,22 @@ function App() {
         <div className="flex items-center gap-4">
           {/* Navigation Tabs */}
           <div className="flex bg-slate-950/60 p-1.5 rounded-xl border border-white/5">
-            <button 
+            <button
               onClick={() => setActiveTab('chat')}
-              className={`px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 flex items-center gap-2 ${
-                activeTab === 'chat' 
-                  ? 'bg-blue-600 text-white shadow-md' 
+              className={`px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 flex items-center gap-2 ${activeTab === 'chat'
+                  ? 'bg-blue-600 text-white shadow-md'
                   : 'text-gray-400 hover:text-white'
-              }`}
+                }`}
             >
               <MessageSquare className="h-4 w-4" />
               Chat Assistant
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('dashboard')}
-              className={`px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 flex items-center gap-2 ${
-                activeTab === 'dashboard' 
-                  ? 'bg-blue-600 text-white shadow-md' 
+              className={`px-4 py-2 rounded-lg font-medium text-sm transition-all duration-200 flex items-center gap-2 ${activeTab === 'dashboard'
+                  ? 'bg-blue-600 text-white shadow-md'
                   : 'text-gray-400 hover:text-white'
-              }`}
+                }`}
             >
               <AlertTriangle className="h-4 w-4" />
               Support Dashboard
@@ -266,7 +277,7 @@ function App() {
           </div>
 
           {/* Wipe DB Helper */}
-          <button 
+          <button
             onClick={handleClearDatabase}
             title="Reset DB"
             className="p-2.5 rounded-xl border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-all duration-200 flex items-center justify-center"
@@ -286,7 +297,7 @@ function App() {
               <div className="glass-panel p-5 flex flex-col gap-3">
                 <h3 className="text-sm font-semibold text-gray-300 flex items-center justify-between">
                   Current Session
-                  <button 
+                  <button
                     onClick={handleResetSession}
                     className="p-1 rounded hover:bg-white/5 text-gray-400 hover:text-white transition-colors duration-200"
                     title="New Session"
@@ -368,24 +379,22 @@ function App() {
                   </div>
                 ) : (
                   messages.map((m, idx) => (
-                    <div 
-                      key={idx} 
+                    <div
+                      key={idx}
                       className={`flex gap-3 max-w-[85%] ${m.role === 'user' ? 'self-end flex-row-reverse' : 'self-start'}`}
                     >
-                      <div className={`h-9 w-9 rounded-xl flex items-center justify-center shrink-0 shadow ${
-                        m.role === 'user' 
-                          ? 'bg-blue-600 text-white' 
+                      <div className={`h-9 w-9 rounded-xl flex items-center justify-center shrink-0 shadow ${m.role === 'user'
+                          ? 'bg-blue-600 text-white'
                           : 'bg-slate-900 border border-white/10 text-cyan-400'
-                      }`}>
+                        }`}>
                         {m.role === 'user' ? <UserCheck className="h-4 w-4" /> : <Layers className="h-4 w-4" />}
                       </div>
-                      
+
                       <div className="flex flex-col gap-1.5">
-                        <div className={`p-4 rounded-2xl leading-relaxed text-sm ${
-                          m.role === 'user'
+                        <div className={`p-4 rounded-2xl leading-relaxed text-sm ${m.role === 'user'
                             ? 'bg-blue-600 text-white rounded-tr-none'
                             : 'glass-panel rounded-tl-none bg-slate-900/60'
-                        }`}>
+                          }`}>
                           {m.content || (isLoading && idx === messages.length - 1 ? (
                             <span className="flex items-center gap-1">
                               <span className="h-2 w-2 bg-blue-500 rounded-full animate-bounce"></span>
@@ -427,13 +436,13 @@ function App() {
                     </div>
                   </div>
                 )}
-                
+
                 <div ref={messagesEndRef} />
               </div>
 
               {/* Chat Input Field */}
               <div className="p-4 border-t border-white/5 bg-slate-950/80">
-                <form 
+                <form
                   onSubmit={(e) => { e.preventDefault(); handleSendMessage(); }}
                   className="flex gap-2.5"
                 >
@@ -469,7 +478,7 @@ function App() {
                   Step 6: Real-time logs of customer conversations escalated due to safety warnings or emotional tone checks.
                 </p>
               </div>
-              <button 
+              <button
                 onClick={fetchTickets}
                 disabled={dashboardLoading}
                 className="flex items-center gap-2 text-xs font-semibold bg-slate-900 border border-white/5 hover:bg-white/5 px-3 py-2 rounded-xl transition-all duration-200"
@@ -508,22 +517,20 @@ function App() {
                           <span className="font-medium text-gray-200">{t.reason}</span>
                         </td>
                         <td className="p-4">
-                          <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider ${
-                            t.tone === 'furious' 
-                              ? 'bg-red-500/20 text-red-300' 
+                          <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider ${t.tone === 'furious'
+                              ? 'bg-red-500/20 text-red-300'
                               : t.tone === 'annoyed'
-                              ? 'bg-amber-500/20 text-amber-300'
-                              : 'bg-gray-500/20 text-gray-300'
-                          }`}>
+                                ? 'bg-amber-500/20 text-amber-300'
+                                : 'bg-gray-500/20 text-gray-300'
+                            }`}>
                             {t.tone}
                           </span>
                         </td>
                         <td className="p-4">
-                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                            t.urgency === 'high' 
-                              ? 'bg-red-500 text-white shadow-lg shadow-red-500/20' 
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${t.urgency === 'high'
+                              ? 'bg-red-500 text-white shadow-lg shadow-red-500/20'
                               : 'bg-amber-500 text-slate-950 font-bold'
-                          }`}>
+                            }`}>
                             {t.urgency}
                           </span>
                         </td>
