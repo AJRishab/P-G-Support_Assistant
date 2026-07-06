@@ -4,129 +4,125 @@ import re
 from pydantic import BaseModel, Field
 from ..services.llm_service import LLMService
 
+
 class ProductEvaluation(BaseModel):
     relevant_products_found: list[str] = Field(description="Names or IDs of matching products found.")
     grounded_summary: str = Field(description="Summary of facts specifically and only found in the provided product details, answering the customer's questions.")
     unverifiable_questions: list[str] = Field(description="Any customer questions that could not be verified or answered using the provided product details.")
+    fit_caveat: str = Field(description=(
+        "If the matched product's actual purpose is narrower or different than what the customer "
+        "described needing, state that mismatch plainly here. Empty string if it's a clean fit."
+    ))
+
 
 class ProductMatch(BaseModel):
-    matched_product_ids: list[str] = Field(
-        description=(
-            "IDs of catalog products that genuinely match the customer's underlying need, "
-            "even if the message shares no exact keywords with the catalog entry. "
-            "Return an empty list if nothing in the catalog is relevant."
-        )
-    )
+    matched_product_ids: list[str] = Field(description=(
+        "IDs of catalog products that genuinely match the customer's underlying need, even if "
+        "the message shares no exact keywords with the catalog entry. Empty list if nothing fits."
+    ))
+
 
 class ProductAgent:
+    # Category-level signals only. Brand matching is dynamic (built from whatever's actually
+    # loaded in products.json) so it scales past a fixed 4-brand list to a real data-driven catalog.
+    CATEGORY_KEYWORDS = {
+        "Detergent": ["laundry", "detergent", "wash", "stain", "grease", "clothes", "dirty"],
+        "Baby Care": ["diaper", "swim", "baby", "toddler", "leak", "splashers"],
+        "Skincare": ["skincare", "skin", "moisturizer", "wrinkle", "face", "cream", "hydrate",
+                     "cleanser", "serum", "toner", "lotion"],
+        "Shaving": ["shave", "razor", "blade", "shaving", "exfoliate", "hair"],
+    }
+
+    SKIN_TYPE_KEYWORDS = {
+        "Sensitive": ["sensitive"],
+        "Dry": ["dry skin", "dryness", "flaky"],
+        "Oily": ["oily skin", "oily", "greasy"],
+        "Combination": ["combination skin", "combination"],
+        "Normal": ["normal skin"],
+    }
+
+    MAX_MATCHES = 5  # caps how many products get stuffed into one grounding prompt
+
     def __init__(self, llm_service: LLMService):
         self.llm_service = llm_service
         self.products = self._load_products()
 
     def _load_products(self) -> list:
-        """
-        Loads the trustworthy official products knowledge base.
-        """
         current_dir = os.path.dirname(os.path.abspath(__file__))
         path = os.path.abspath(os.path.join(current_dir, "..", "config", "products.json"))
         try:
             with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("products", [])
+                return json.load(f).get("products", [])
         except Exception as e:
             print(f"[ProductAgent Error] Failed to load products.json from {path}: {e}")
             return []
 
     def _keyword_search(self, query: str) -> list:
-        """
-        Fast, dependency-free lexical pass over the catalog: matches brand, name,
-        category, and ingredients that are directly mentioned in the query.
-        This is the only pass available in mock mode (no LLM to reason with), and
-        it's always tried first even when a real LLM is configured, since it's free
-        and instantly resolves the common case of the customer naming the brand/product.
-        """
         query_lower = query.lower()
-        matched = []
-        
-        # Define some mappings for common needs
-        need_keywords = {
-            "tide": ["tide", "laundry", "detergent", "wash", "stain", "grease", "clothes", "dirty"],
-            "pampers": ["pampers", "diaper", "swim", "baby", "toddler", "leak", "splashers"],
-            "olay": ["olay", "skincare", "skin", "moisturizer", "wrinkle", "face", "cream", "hydrate", "sensitive"],
-            "gillette": ["gillette", "shave", "razor", "blade", "shaving", "exfoliate", "hair"]
+
+        matched_brands = {
+            prod["brand"].lower() for prod in self.products
+            if re.search(r'\b' + re.escape(prod["brand"].lower()) + r'\b', query_lower)
+        }
+        matched_categories = {
+            category for category, keywords in self.CATEGORY_KEYWORDS.items()
+            if any(re.search(r'\b' + re.escape(kw) + r'\b', query_lower) for kw in keywords)
+        }
+        matched_skin_types = {
+            skin_type for skin_type, keywords in self.SKIN_TYPE_KEYWORDS.items()
+            if any(kw in query_lower for kw in keywords)
         }
 
-        # Check keyword associations
-        matched_brands = set()
-        for brand, keywords in need_keywords.items():
-            for kw in keywords:
-                if re.search(r'\b' + re.escape(kw) + r'\b', query_lower):
-                    matched_brands.add(brand)
-                    break
-
+        matched = []
         for prod in self.products:
-            # Direct text match or brand association
-            is_match = False
-            if prod["brand"].lower() in matched_brands:
-                is_match = True
-            elif any(re.search(r'\b' + re.escape(word) + r'\b', query_lower) for word in prod["name"].lower().split()):
-                is_match = True
-            elif prod["category"].lower() in query_lower:
-                is_match = True
-            elif any(ing.lower() in query_lower for ing in prod["ingredients"]):
-                is_match = True
-
+            is_match = (
+                prod["brand"].lower() in matched_brands
+                or prod["category"] in matched_categories
+                or any(re.search(r'\b' + re.escape(w) + r'\b', query_lower) for w in prod["name"].lower().split())
+                or any(ing.lower() in query_lower for ing in prod.get("ingredients", []))
+            )
             if is_match:
                 matched.append(prod)
 
-        return matched
+        # The actual fix for the original bug, now backed by real per-product data: if the
+        # query names a skin type, prefer Skincare products tagged for it over ones that aren't.
+        if matched_skin_types:
+            skin_filtered = [
+                p for p in matched
+                if p["category"] != "Skincare" or matched_skin_types & set(p.get("skin_types", []))
+            ]
+            if skin_filtered:
+                matched = skin_filtered
+
+        matched.sort(key=lambda p: p.get("rank", 0), reverse=True)
+        return matched[: self.MAX_MATCHES]
+
+    def _has_need_signal(self, query: str) -> bool:
+        query_lower = query.lower()
+        all_keywords = [kw for kws in self.CATEGORY_KEYWORDS.values() for kw in kws]
+        return any(re.search(r'\b' + re.escape(kw) + r'\b', query_lower) for kw in all_keywords)
 
     async def _semantic_search(self, query: str) -> list:
-        """
-        LLM-based retrieval pass: matches the query against the catalog by underlying
-        need rather than exact words, catching paraphrases the keyword pass misses
-        (e.g. "my face looks tired around the eyes" -> Olay, with no mention of
-        "skin", "moisturizer", or the brand name).
-
-        Only meaningful when a real LLM is configured. Callers should check
-        `llm_service.use_mock` before calling this, and treat the result as
-        best-effort, falling back to `_keyword_search` results on any failure.
-        """
         catalog_brief = "\n".join(
             f"- id: {p['id']} | brand: {p['brand']} | category: {p['category']} | purpose: {p['purpose']}"
             for p in self.products
         )
         prompt = (
             "You are the retrieval step of the Product Agent for P&G Customer Support.\n"
-            "Below is the full product catalog (id, brand, category, purpose). Decide which products, "
-            "if any, genuinely match what the customer is describing - based on their underlying need, "
-            "not just literal keyword overlap. Customers often describe a problem or symptom without "
-            "naming the brand, category, or product type.\n\n"
+            "Below is the full product catalog. Decide which products, if any, genuinely match "
+            "the customer's underlying need, not just literal keyword overlap.\n\n"
             f"=== CATALOG ===\n{catalog_brief}\n\n"
-            f"=== CUSTOMER MESSAGE ===\n\"{query}\"\n\n"
-            "Return a JSON object with matched_product_ids. Only include a product if it truly answers "
-            "the need described - return an empty list rather than guessing the closest available option."
+            f"Customer Message: \"{query}\"\n\n"
+            "Return a JSON object with matched_product_ids. Empty list rather than guessing."
         )
         result = await self.llm_service.generate_json(prompt, schema_class=ProductMatch)
         matched_ids = set(result.get("matched_product_ids", []) or [])
-        return [p for p in self.products if p["id"] in matched_ids]
+        return [p for p in self.products if p["id"] in matched_ids][: self.MAX_MATCHES]
 
     async def search_catalog(self, query: str) -> list:
-        """
-        Step 2: Retrieves matching products for a customer query.
-
-        Two-tier search:
-        1. Keyword/brand match (fast, free, works with or without an LLM configured).
-        2. If that finds nothing and a real LLM is available, an LLM-based semantic
-           pass catches paraphrased or needs-based questions that share no keywords
-           with the catalog. In mock mode this second tier is skipped entirely, since
-           there is no real model available to reason with - the heuristic mock engine
-           only knows how to fake the grounding step, not open-ended retrieval.
-        """
         matched = self._keyword_search(query)
         if matched or getattr(self.llm_service, "use_mock", True):
             return matched
-
         try:
             return await self._semantic_search(query)
         except Exception as e:
@@ -134,15 +130,9 @@ class ProductAgent:
             return matched
 
     async def analyze_and_ground(self, message: str, conversation_history: list = None) -> dict:
-        """
-        Handles Step 2 (gather what it needs) and Step 3 (factual grounding).
-        Queries the catalog and synthesizes the grounded answer, indicating what couldn't be answered.
-        """
-        # Step 2: Query catalog
         matched_products = await self.search_catalog(message)
-        
-        # If history is present and no products were found, search on history too
-        if not matched_products and conversation_history:
+
+        if not matched_products and conversation_history and not self._has_need_signal(message):
             recent_user_messages = [h["content"] for h in conversation_history[-3:] if h["role"] == "user"]
             for prev_msg in recent_user_messages:
                 matched_products = await self.search_catalog(prev_msg)
@@ -153,23 +143,23 @@ class ProductAgent:
             return {
                 "relevant_products_found": [],
                 "grounded_summary": "",
-                "unverifiable_questions": ["No official product in our database matches your search. We cannot verify or answer your question."]
+                "unverifiable_questions": ["No official product in our database matches your search. We cannot verify or answer your question."],
+                "fit_caveat": "",
             }
 
-        # Prepare context for Step 3 Grounding Check
         context_str = json.dumps(matched_products, indent=2)
-        
         prompt = (
             "You are the Product Agent for P&G Customer Support.\n"
-            "Your job is to answer customer questions using ONLY the official product information provided below.\n"
-            "DO NOT assume, extrapolate, or invent any facts. If a detail is not explicitly stated in the context, "
-            "mark it as an unverifiable question.\n\n"
+            "Answer using ONLY the official product information below. DO NOT assume, extrapolate, "
+            "or invent facts. If a detail isn't explicitly stated (including safety warnings or "
+            "where to buy, if blank), mark it as unverifiable rather than guessing.\n\n"
+            "Some products include a skin_types field (Sensitive, Dry, Oily, Combination, Normal) - "
+            "use it directly when the customer mentions their skin type.\n\n"
+            "Separately, check fit: does this product's stated purpose actually match what the "
+            "customer described needing? If not, say so plainly in fit_caveat.\n\n"
             f"=== OFFICIAL PRODUCT CONTEXT ===\n{context_str}\n\n"
-            f"=== CUSTOMER MESSAGE ===\n{message}\n\n"
-            "Return a JSON object with:\n"
-            "1. relevant_products_found: list of product names matched.\n"
-            "2. grounded_summary: answer explaining ingredients, purpose, safety, or where to buy, drawing strictly from the context.\n"
-            "3. unverifiable_questions: list of queries or details requested by the user that were NOT verifiable in the context."
+            f"Customer Message: \"{message}\"\n\n"
+            "Return a JSON object with relevant_products_found, grounded_summary, unverifiable_questions, and fit_caveat."
         )
 
         try:
@@ -177,14 +167,14 @@ class ProductAgent:
             return {
                 "relevant_products_found": result.get("relevant_products_found", [p["name"] for p in matched_products]),
                 "grounded_summary": result.get("grounded_summary", ""),
-                "unverifiable_questions": result.get("unverifiable_questions", [])
+                "unverifiable_questions": result.get("unverifiable_questions", []),
+                "fit_caveat": result.get("fit_caveat", ""),
             }
         except Exception as e:
             print(f"[ProductAgent Error] Grounding failed: {e}")
-            # Mock fallback summary
-            summary = self.llm_service._mock_text_response(message)
             return {
                 "relevant_products_found": [p["name"] for p in matched_products],
-                "grounded_summary": summary,
-                "unverifiable_questions": []
+                "grounded_summary": f"{matched_products[0]['name']}: {matched_products[0]['purpose']}",
+                "unverifiable_questions": [],
+                "fit_caveat": "",
             }

@@ -5,31 +5,12 @@ import asyncio
 import httpx
 from dotenv import load_dotenv
 
-# Load variables from a .env file (if one exists) into the process environment.
-# This does NOT override a real environment variable that's already set (e.g.
-# one exported in the shell, or injected by a deployment platform) - it only
-# fills in ones that are still unset. Without this call, a .env file copied
-# from .env.example was silently ignored: os.getenv() only sees real process
-# environment variables, not the contents of a .env file, unless something
-# explicitly loads it first - which nothing here did before.
 load_dotenv()
 
-# Load OPENROUTER_API_KEY from env
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-# OpenRouter configuration
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# Default model - can be overridden via the OPENROUTER_MODEL env var (see
-# .env.example), or by passing model_name= directly to LLMService().
-# "openrouter/free" is OpenRouter's Free Models Router alias, which auto-selects
-# a free model per request. (An earlier value, "open_router/openrouter/free", had
-# a stray "open_router/" prefix and was not a valid OpenRouter model slug - every
-# live API call would fail and silently fall back to mock mode.)
 DEFAULT_MODEL = os.getenv("OPENROUTER_MODEL") or "openrouter/free"
 
-# Shared request headers for every OpenRouter call (both generate_json and
-# generate_stream use a fresh AsyncClient per call, so this avoids repeating
-# the same header dict in two places).
 REQUEST_HEADERS = {
     "Authorization": f"Bearer {OPENROUTER_API_KEY}",
     "HTTP-Referer": "https://github.com/AJRishab/pg-support-assistant",
@@ -42,86 +23,40 @@ class LLMService:
     def __init__(self, model_name: str = None):
         self.use_mock = not bool(OPENROUTER_API_KEY)
         self.model_name = model_name or DEFAULT_MODEL
-
-        # Make the active mode impossible to miss - this exact ambiguity (is it
-        # actually calling a real LLM right now, or silently still on the mock
-        # engine?) is otherwise invisible anywhere in the app.
         if self.use_mock:
-            print("[LLMService] Running in MOCK mode (no OPENROUTER_API_KEY found) - "
-                  "responses come from the rule-based mock engine, not a real LLM. "
-                  "See server/.env.example to configure a real key.")
+            print("[LLMService] Running in MOCK mode (no OPENROUTER_API_KEY found).")
         else:
-            print(f"[LLMService] Running in LIVE mode - calling OpenRouter with model '{self.model_name}'.")
+            print(f"[LLMService] Running in LIVE mode - model '{self.model_name}'.")
 
     async def _call_openrouter(self, messages: list, schema_class=None) -> dict:
-        """
-        Makes an async request to the OpenRouter API and returns the parsed JSON body.
-
-        Uses a fresh httpx.AsyncClient per call (matching the pattern already used
-        by generate_stream below) instead of a shared synchronous client. The
-        previous implementation used a blocking httpx.Client here, which stalled
-        the entire FastAPI event loop for the duration of every single call -
-        under concurrent load, one user's classification request would freeze
-        every other in-flight request on the server.
-        """
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "temperature": 0.0,
-            "max_tokens": 4000,
-        }
-
+        payload = {"model": self.model_name, "messages": messages, "temperature": 0.0, "max_tokens": 4000}
         if schema_class and hasattr(schema_class, "model_json_schema"):
-            # OpenRouter (mirroring the OpenAI Structured Outputs spec) expects
-            # json_schema to be an object with name/strict/schema fields, with the
-            # actual JSON Schema nested under "schema" - not the raw schema object
-            # itself. The previous code passed model_json_schema() directly as
-            # json_schema, which is missing the required "name" field and would
-            # likely be rejected (or silently ignored) by the API.
             payload["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {
-                    "name": schema_class.__name__,
-                    "strict": True,
-                    "schema": schema_class.model_json_schema(),
-                },
+                "json_schema": {"name": schema_class.__name__, "strict": True, "schema": schema_class.model_json_schema()},
             }
-
         async with httpx.AsyncClient(timeout=30.0, headers=REQUEST_HEADERS) as client:
             response = await client.post(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload)
             response.raise_for_status()
             data = response.json()
-
-        # Extract the message content
-        message_content = data["choices"][0]["message"]["content"]
-        return json.loads(message_content.strip())
+        return json.loads(data["choices"][0]["message"]["content"].strip())
 
     async def generate_json(self, prompt: str, schema_class=None) -> dict:
-        """
-        Generates a JSON response from the LLM, with a fallback to mock evaluation
-        if no API key is available. Async end-to-end so callers (the agents) never
-        block the event loop while a real API call is in flight.
-        """
         if self.use_mock:
             return self._mock_json_response(prompt)
-
         try:
-            messages = [{"role": "user", "content": prompt}]
-            result = await self._call_openrouter(messages, schema_class)
-            return result
+            return await self._call_openrouter([{"role": "user", "content": prompt}], schema_class)
         except Exception as e:
-            # Fallback to mock on remote API errors
             print(f"[LLMService Error] Calling OpenRouter API failed: {e}. Falling back to mock.")
             return self._mock_json_response(prompt)
 
-    async def generate_stream(self, prompt: str, system_instruction: str = None):
+    async def generate_stream(self, prompt: str, system_instruction: str = None, mock_context: dict = None):
         """
-        Asynchronously streams the response text from OpenRouter or mock.
-        Yields chunk strings.
+        mock_context carries the pipeline's already-computed decisions so mock mode builds the
+        reply from them directly, instead of re-scanning prompt text.
         """
         if self.use_mock:
-            # Simulate a streaming response for mock mode
-            mock_text = self._mock_text_response(prompt, system_instruction)
+            mock_text = self._mock_text_response(prompt, system_instruction, mock_context)
             words = mock_text.split(" ")
             for i, word in enumerate(words):
                 yield (word + " " if i < len(words) - 1 else word)
@@ -132,23 +67,11 @@ class LLMService:
             messages = [{"role": "user", "content": prompt}]
             if system_instruction:
                 messages.insert(0, {"role": "system", "content": system_instruction})
-
             async with httpx.AsyncClient(timeout=30.0, headers=REQUEST_HEADERS) as async_client:
-                payload = {
-                    "model": self.model_name,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 4000,
-                    "stream": True,
-                }
-
-                async with async_client.stream(
-                    f"{OPENROUTER_BASE_URL}/chat/completions",
-                    json=payload
-                ) as response:
+                payload = {"model": self.model_name, "messages": messages, "temperature": 0.7, "max_tokens": 4000, "stream": True}
+                async with async_client.stream(f"{OPENROUTER_BASE_URL}/chat/completions", json=payload) as response:
                     async for chunk in response.aiter_lines():
                         if chunk:
-                            # Parse the streaming JSON line
                             try:
                                 data = json.loads(chunk)
                                 if "choices" in data and data["choices"]:
@@ -159,62 +82,45 @@ class LLMService:
                                 continue
         except Exception as e:
             print(f"[LLMService Error] Streaming failed: {e}. Falling back to mock stream.")
-            # Fallback to mock stream
-            mock_text = self._mock_text_response(prompt, system_instruction)
+            mock_text = self._mock_text_response(prompt, system_instruction, mock_context)
             words = mock_text.split(" ")
             for i, word in enumerate(words):
                 yield (word + " " if i < len(words) - 1 else word)
                 await asyncio.sleep(0.05)
 
     def _mock_json_response(self, prompt: str) -> dict:
-        """
-        Heuristic rule-based mock engine to handle classification tasks offline.
-        """
         prompt_lower = prompt.lower()
-
-        # Extract the user's raw message if possible to avoid matching instruction text
-        msg_match = re.search(r'customer message:\s*"(.*)"', prompt_lower, re.DOTALL)
+        # Non-greedy - the old greedy version could over-capture past the intended closing quote.
+        msg_match = re.search(r'customer message:\s*"(.*?)"', prompt_lower, re.DOTALL)
         msg_content = msg_match.group(1) if msg_match else prompt_lower
 
-        # 1. Safety Agent Classification
         if "safety agent" in prompt_lower or "safety check" in prompt_lower:
+            # \w* suffixes catch plurals/variants ("rashes", "burning") the old exact-word
+            # patterns silently missed.
             danger_patterns = [
-                r"\b(swallow|ingest|ate|drink|drunk|swallowed)\b",
-                r"\b(rash|allerg|hives|burn|irritat|redness|swol|swell|hospit|doctor)\b",
-                r"\b(poison|toxic|chok|bleed|injur|hurt|pain)\b",
-                r"\b(eye|blind|exposure|exposed)\b"
+                r"\b(swallow\w*|ingest\w*|ate|drank|drink\w*|drunk)\b",
+                r"\b(rash\w*|allerg\w*|hive\w*|burn\w*|irritat\w*|redness|swoll?en|swell\w*|hospital\w*|doctor\w*)\b",
+                r"\b(poison\w*|toxic\w*|chok\w*|bleed\w*|bled|injur\w*|hurt\w*|pain\w*)\b",
+                r"\b(eye\w*|blind\w*|exposure|exposed)\b",
             ]
-            triggered = False
-            reason = "No safety concern detected."
-            urgency = "low"
-
+            triggered, reason, urgency = False, "No safety concern detected.", "low"
             for pat in danger_patterns:
                 match = re.search(pat, msg_content)
                 if match:
                     triggered = True
                     matched_word = match.group(0)
-                    urgency = "high" if "swallow" in matched_word or "poison" in matched_word or "hospital" in matched_word else "medium"
+                    urgency = "high" if re.match(r"swallow|poison|hospital", matched_word) else "medium"
                     reason = f"Potential risk identified regarding '{matched_word}' in user message."
                     break
+            return {"safety_triggered": triggered, "reaction_reported": triggered, "reason": reason, "urgency": urgency}
 
-            return {
-                "safety_triggered": triggered,
-                "reason": reason,
-                "urgency": urgency
-            }
-
-        # 2. Sentiment/Tone Agent Classification
         if "sentiment agent" in prompt_lower or "tone check" in prompt_lower:
             angry_patterns = [
                 r"\b(sue|court|lawyer|horribl|worst|garbage|trash|useless|scam|fraud)\b",
                 r"\b(hate|angry|pissed|furious|disgust|cancel|refund|complain)\b",
-                r"!{2,}",
-                r"\b(terrible|awful|crap|unacceptable)\b"
+                r"!{2,}", r"\b(terrible|awful|crap|unacceptable)\b",
             ]
-            annoyed_patterns = [
-                r"\b(slow|disappoint|broke|faulty|frustrat|annoy|bad|regret|fix)\b"
-            ]
-
+            annoyed_patterns = [r"\b(slow|disappoint|broke|faulty|frustrat|annoy|bad|regret|fix)\b"]
             tone = "calm"
             for pat in angry_patterns:
                 if re.search(pat, msg_content):
@@ -225,15 +131,10 @@ class LLMService:
                     if re.search(pat, msg_content):
                         tone = "annoyed"
                         break
-
             return {"tone": tone}
 
-        # 3. Product Agent Grounding
         if "product agent" in prompt_lower:
-            matched_prods = []
-            summary = ""
-            unverifiable = []
-
+            matched_prods, summary, unverifiable = [], "", []
             if "tide" in msg_content:
                 matched_prods.append("Tide Hygienic Clean Heavy Duty 10X")
                 summary = "Tide Hygienic Clean Heavy Duty 10X contains Sodium Alcoholethoxy Sulfate, Linear Alkylbenzene Sulfonate, Propylene Glycol, Sodium Borate, and Water. It is designed for heavy-duty cleaning and removing grease."
@@ -249,29 +150,40 @@ class LLMService:
             else:
                 unverifiable.append("No official product matches found in our database.")
                 summary = "We could not find verified details for the requested product."
+            return {"relevant_products_found": matched_prods, "grounded_summary": summary, "unverifiable_questions": unverifiable}
 
-            return {
-                "relevant_products_found": matched_prods,
-                "grounded_summary": summary,
-                "unverifiable_questions": unverifiable
-            }
-
-        # Default fallback JSON
         return {"error": "Mock fallback reached without matching classification context."}
 
-    def _mock_text_response(self, prompt: str, system_instruction: str = None) -> str:
-        """
-        Heuristic generator for the final response when in mock mode.
-        """
+    def _mock_text_response(self, prompt: str, system_instruction: str = None, mock_context: dict = None) -> str:
+        if mock_context is not None:
+            safety_triggered = bool(mock_context.get("safety_triggered", False))
+            tone_angry = mock_context.get("tone") in ("annoyed", "furious")
+            escalated = bool(mock_context.get("handoff_required", False))
+            grounded_summary = mock_context.get("grounded_summary") or ""
+
+            parts = []
+            if tone_angry:
+                parts.append("I am very sorry to hear about your experience and understand your frustration.")
+            if safety_triggered:
+                parts.append("Your safety is our top priority. Please stop using the product immediately. "
+                              "If someone ingested the product or is experiencing a severe reaction, contact a "
+                              "healthcare professional or Poison Control right away.")
+            if grounded_summary:
+                parts.append(f"Regarding your query: {grounded_summary}")
+            else:
+                parts.append("I'm happy to help you find the right P&G product. Could you tell me a bit more "
+                              "about what you're looking for (e.g. skin care, laundry care, baby diapers, or shaving)?")
+            if escalated:
+                parts.append("I have flagged this conversation for a human support representative who will "
+                              "follow up with you as soon as possible.")
+            return " ".join(parts)
+
+        # legacy fallback for any caller that doesn't pass mock_context
         prompt_lower = prompt.lower()
-
-        # Extract safety and escalation flags if they were embedded in the generation prompt
-        safety_triggered = "safety_triggered: true" in prompt_lower or "safety_triggered=true" in prompt_lower or "swallow" in prompt_lower or "rash" in prompt_lower or "allergic" in prompt_lower
+        safety_triggered = bool(re.search(r"\b(swallow\w*|rash\w*|allerg\w*)\b", prompt_lower))
         tone_angry = "furious" in prompt_lower or "annoyed" in prompt_lower or "sue" in prompt_lower or "horrible" in prompt_lower
-
         escalated = safety_triggered or tone_angry
 
-        # Basic grounding responses based on brand keywords
         grounded_info = ""
         if "tide" in prompt_lower:
             grounded_info = "Tide Hygienic Clean Heavy Duty 10X is designed for heavy-duty cleaning and removing grease. It contains Sodium Alcoholethoxy Sulfate and Sodium Borate. Keep out of reach of children. It is available at Walmart and Target."
@@ -282,30 +194,15 @@ class LLMService:
         elif "gillette" in prompt_lower:
             grounded_info = "Gillette Labs Exfoliating Razor features an exfoliating bar to remove dirt before blades pass. It uses stainless steel blades and a lubricating strip. Handle sharp blades with care. It is available at Walmart, CVS, and gillette.com."
 
-        response_parts = []
-
-        # 1. Apology if angry
+        parts = []
         if tone_angry:
-            response_parts.append("I am very sorry to hear about your experience and understand your frustration.")
-
-        # 2. General Safety guidance if triggered
+            parts.append("I am very sorry to hear about your experience and understand your frustration.")
         if safety_triggered:
-            response_parts.append("Your safety is our top priority. Please stop using the product immediately. If someone ingested the product or is experiencing a severe reaction, contact a healthcare professional or Poison Control right away.")
-
-        # 3. Grounded answer/recommendation
+            parts.append("Your safety is our top priority. Please stop using the product immediately. If someone ingested the product or is experiencing a severe reaction, contact a healthcare professional or Poison Control right away.")
         if grounded_info:
-            response_parts.append(f"Regarding your query: {grounded_info}")
+            parts.append(f"Regarding your query: {grounded_info}")
         else:
-            # General answer matching need
-            if "sensitive skin" in prompt_lower:
-                response_parts.append("For sensitive skin, Olay Regenerist Whip is dermatologically designed with Niacinamide to hydrate without irritation. You can buy it at Walgreens or olay.com.")
-            elif "grease" in prompt_lower:
-                response_parts.append("For grease stains, we recommend Tide Hygienic Clean Heavy Duty 10X, which is specifically formulated to remove heavy grease and dirt. It is available at major retailers like Target and Walmart.")
-            else:
-                response_parts.append("I'm happy to help you find the right P&G product. Could you tell me a bit more about what you're looking for (e.g. skin care, laundry care, baby diapers, or shaving)?")
-
-        # 4. Escalation warning
+            parts.append("I'm happy to help you find the right P&G product. Could you tell me a bit more about what you're looking for (e.g. skin care, laundry care, baby diapers, or shaving)?")
         if escalated:
-            response_parts.append("I have flagged this conversation for a human support representative who will follow up with you as soon as possible.")
-
-        return " ".join(response_parts)
+            parts.append("I have flagged this conversation for a human support representative who will follow up with you as soon as possible.")
+        return " ".join(parts)
