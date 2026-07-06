@@ -1,0 +1,60 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Environment / secrets - NEVER bake into image
+.env
+.env.*
+!.env.example
+
+# SQLite databases - these should persist via volume, not be in the image
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.db-wal
+
+# Git
+.git/
+.gitignore
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tests (optional - can exclude to keep image lean)
+.pytest_cache/
+tests/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

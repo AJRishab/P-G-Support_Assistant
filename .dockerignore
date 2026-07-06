@@ -1,0 +1,45 @@
+# Root .dockerignore
+# This applies to the docker-compose build context
+
+# Node / client
+client/node_modules/
+client/dist/
+client/.vite/
+npm-debug.log*
+
+# Python / server
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+
+# SQLite databases - should persist via volume, not in image
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.db-wal
+
+# Environment / secrets - NEVER bake into image
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

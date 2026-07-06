@@ -1,14 +1,15 @@
 import os
 import json
 import re
+from typing import List
 from pydantic import BaseModel, Field
 from ..services.llm_service import LLMService
 
 
 class ProductEvaluation(BaseModel):
-    relevant_products_found: list[str] = Field(description="Names or IDs of matching products found.")
+    relevant_products_found: List[str] = Field(description="Names or IDs of matching products found.")
     grounded_summary: str = Field(description="Summary of facts specifically and only found in the provided product details, answering the customer's questions.")
-    unverifiable_questions: list[str] = Field(description="Any customer questions that could not be verified or answered using the provided product details.")
+    unverifiable_questions: List[str] = Field(description="Any customer questions that could not be verified or answered using the provided product details.")
     fit_caveat: str = Field(description=(
         "If the matched product's actual purpose is narrower or different than what the customer "
         "described needing, state that mismatch plainly here. Empty string if it's a clean fit."
@@ -16,7 +17,7 @@ class ProductEvaluation(BaseModel):
 
 
 class ProductMatch(BaseModel):
-    matched_product_ids: list[str] = Field(description=(
+    matched_product_ids: List[str] = Field(description=(
         "IDs of catalog products that genuinely match the customer's underlying need, even if "
         "the message shares no exact keywords with the catalog entry. Empty list if nothing fits."
     ))
